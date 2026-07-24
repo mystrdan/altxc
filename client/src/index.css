@@ -1,0 +1,75 @@
+@import "tailwindcss";
+
+/*
+  ALTXC design tokens.
+  Palette built around "verification" (mint) and "escrow lock" (amber) as the
+  two accent signals, on a deep slate-black base — deliberately not the
+  cream/terracotta or acid-green/near-black defaults.
+*/
+@theme {
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --color-bg: #0A0D12;
+  --color-surface: #12161D;
+  --color-surface-2: #171C24;
+  --color-border: #232933;
+
+  --color-text-primary: #EDEFF2;
+  --color-text-muted: #8B94A3;
+  --color-text-faint: #5B6472;
+
+  --color-mint: #34D8B0;
+  --color-mint-dim: #1E8F73;
+  --color-amber: #E8A33D;
+  --color-amber-dim: #9C6C1F;
+  --color-danger: #E5484D;
+
+  /* Light mode counterparts (used via .light class overrides below) */
+}
+
+/* Light mode overrides — toggled by adding/removing the `dark` class on <html> */
+html:not(.dark) {
+  --color-bg: #F7F7F5;
+  --color-surface: #FFFFFF;
+  --color-surface-2: #F0F1EF;
+  --color-border: #E3E4E1;
+  --color-text-primary: #14171B;
+  --color-text-muted: #5B6472;
+  --color-text-faint: #8B94A3;
+}
+
+html {
+  color-scheme: dark;
+}
+html:not(.dark) {
+  color-scheme: light;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background-color: var(--color-mint);
+  color: #0A0D12;
+}
+
+/* Visible keyboard focus everywhere, per accessibility requirement */
+:focus-visible {
+  outline: 2px solid var(--color-mint);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
