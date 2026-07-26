@@ -12,6 +12,7 @@ import {
   createMarket,
   updateMarket,
   deleteMarket,
+  listAllListings,
   listReports,
   updateReportStatus,
   getSettings,
@@ -28,6 +29,8 @@ router.patch('/users/:id/role', validateBody(updateUserRoleSchema), updateUserRo
 router.post('/markets', validateBody(marketSchema), createMarket);
 router.patch('/markets/:id', validateBody(marketSchema.partial()), updateMarket);
 router.delete('/markets/:id', deleteMarket);
+
+router.get('/listings', listAllListings);
 
 router.get('/reports', listReports);
 router.patch('/reports/:id/status', validateBody(reportStatusSchema), updateReportStatus);

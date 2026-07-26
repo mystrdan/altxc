@@ -1,5 +1,9 @@
 export type UserRole = 'user' | 'merchant' | 'admin';
 export type MarketStatus = 'active' | 'paused' | 'delisted';
+export type ListingType = 'buy' | 'sell';
+export type ListingStatus = 'open' | 'closed';
+export type TradeRequestStatus = 'pending' | 'accepted' | 'declined' | 'cancelled';
+export type TradeStatus = 'pending' | 'in_escrow' | 'completed' | 'cancelled' | 'disputed';
 export type ReportStatus = 'open' | 'reviewing' | 'resolved' | 'dismissed';
 
 export interface UserRow {
@@ -14,7 +18,7 @@ export interface UserRow {
 
 export interface ProfileRow {
   user_id: string;
-  trust_score: string; // numeric comes back as string from pg
+  trust_score: string;
   completed_trades: number;
   trade_volume_usd: string;
   supported_markets: string[];

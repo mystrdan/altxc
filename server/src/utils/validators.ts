@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-// Usernames: alphanumeric + underscore, 3-30 chars. Keeps profile URLs clean.
+// Usernames: alphanumeric + underscore, 3-30 chars
 const usernameSchema = z
   .string()
   .trim()
@@ -23,9 +23,12 @@ export const registerSchema = z.object({
 });
 
 export const loginSchema = z.object({
-  // Allow login via username OR email in a single field for convenience.
   identifier: z.string().trim().min(1, 'Username or email is required'),
   password: z.string().min(1, 'Password is required'),
+});
+
+export const refreshTokenSchema = z.object({
+  refreshToken: z.string().min(1, 'Refresh token is required'),
 });
 
 export const reportSchema = z.object({
@@ -51,4 +54,43 @@ export const updateUserRoleSchema = z.object({
 
 export const reportStatusSchema = z.object({
   status: z.enum(['open', 'reviewing', 'resolved', 'dismissed']),
+});
+
+export const createListingSchema = z.object({
+  type: z.enum(['buy', 'sell']),
+  coin: z.string().trim().min(1).max(10),
+  amount: z.number().positive('Amount must be positive'),
+  price: z.number().positive('Price must be positive'),
+  marketId: z.string().uuid('Invalid market ID'),
+});
+
+export const updateListingSchema = z.object({
+  type: z.enum(['buy', 'sell']).optional(),
+  coin: z.string().trim().min(1).max(10).optional(),
+  amount: z.number().positive('Amount must be positive').optional(),
+  price: z.number().positive('Price must be positive').optional(),
+  status: z.enum(['open', 'closed']).optional(),
+});
+
+export const sendTradeRequestSchema = z.object({
+  listingId: z.string().uuid('Invalid listing ID'),
+  message: z.string().trim().max(500).optional(),
+});
+
+export const respondToTradeRequestSchema = z.object({
+  action: z.enum(['accepted', 'declined']),
+});
+
+export const sendMessageSchema = z.object({
+  content: z.string().trim().min(1, 'Message is required').max(2000, 'Message too long'),
+});
+
+export const updateTradeStatusSchema = z.object({
+  status: z.enum(['pending', 'in_escrow', 'completed', 'cancelled', 'disputed']),
+});
+
+export const updateProfileSchema = z.object({
+  displayName: z.string().trim().max(50).optional(),
+  bio: z.string().trim().max(280).optional(),
+  supportedMarkets: z.array(z.string()).optional(),
 });

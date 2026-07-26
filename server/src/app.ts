@@ -6,6 +6,8 @@ import morgan from 'morgan';
 import authRoutes from './routes/auth.routes';
 import profileRoutes from './routes/profile.routes';
 import marketsRoutes from './routes/markets.routes';
+import listingsRoutes from './routes/listings.routes';
+import tradesRoutes from './routes/trades.routes';
 import adminRoutes from './routes/admin.routes';
 import statusRoutes from './routes/status.routes';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
@@ -23,11 +25,13 @@ export function createApp() {
   app.use(express.json());
   app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
-  // Versioned API - keeps room for /api/v2 later without breaking clients.
+  // Versioned API
   const v1 = express.Router();
   v1.use(authRoutes);
   v1.use(profileRoutes);
   v1.use(marketsRoutes);
+  v1.use(listingsRoutes);
+  v1.use(tradesRoutes);
   v1.use(statusRoutes);
   v1.use('/admin', adminRoutes);
 

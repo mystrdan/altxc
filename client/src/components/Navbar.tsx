@@ -31,9 +31,17 @@ export function Navbar() {
             Markets
           </NavLink>
           {user && (
-            <NavLink to="/dashboard" className={navLinkClass}>
-              Dashboard
-            </NavLink>
+            <>
+              <NavLink to="/dashboard" className={navLinkClass}>
+                Dashboard
+              </NavLink>
+              <NavLink to="/listings" className={navLinkClass}>
+                Listings
+              </NavLink>
+              <NavLink to="/trades/requests" className={navLinkClass}>
+                Trade Requests
+              </NavLink>
+            </>
           )}
           {user?.role === 'admin' && (
             <NavLink to="/admin" className={navLinkClass}>

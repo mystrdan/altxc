@@ -1,0 +1,233 @@
+// ALTXC - Complete Prisma Schema
+// PostgreSQL database for the P2P altcoin escrow marketplace
+
+generator client {
+  provider = "prisma-client"
+  output   = "../server/src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────
+
+enum UserRole {
+  user
+  merchant
+  admin
+}
+
+enum MarketStatus {
+  active
+  paused
+  delisted
+}
+
+enum ListingType {
+  buy
+  sell
+}
+
+enum ListingStatus {
+  open
+  closed
+}
+
+enum TradeRequestStatus {
+  pending
+  accepted
+  declined
+  cancelled
+}
+
+enum TradeStatus {
+  pending
+  in_escrow
+  completed
+  cancelled
+  disputed
+}
+
+enum ReportStatus {
+  open
+  reviewing
+  resolved
+  dismissed
+}
+
+// ─── Models ──────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(uuid()) @db.Uuid
+  username      String    @unique
+  email         String    @unique
+  passwordHash  String    @map("password_hash")
+  role          UserRole  @default(user)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  lastSeenAt    DateTime  @default(now()) @map("last_seen_at")
+
+  profile       Profile?
+  listings      Listing[]
+  sentRequests  TradeRequest[]  @relation("SentRequests")
+  receivedRequests TradeRequest[] @relation("ReceivedRequests")
+  tradesAsBuyer  Trade[] @relation("TradesAsBuyer")
+  tradesAsSeller Trade[] @relation("TradesAsSeller")
+  messages      Message[]
+  reportsMade   Report[]        @relation("ReportedBy")
+  reportsReceived Report[]      @relation("ReportedUser")
+  sessions      Session[]
+
+  @@index([username(sort: Asc)])
+  @@index([email(sort: Asc)])
+  @@map("users")
+}
+
+model Profile {
+  userId          String   @id @map("user_id") @db.Uuid
+  displayName     String   @default("") @map("display_name")
+  trustScore      Decimal  @default(0.00) @map("trust_score") @db.Decimal(5, 2)
+  completedTrades Int      @default(0) @map("completed_trades")
+  tradeVolumeUsd  Decimal  @default(0.00) @map("trade_volume_usd") @db.Decimal(18, 2)
+  supportedMarkets String[] @default([]) @map("supported_markets")
+  bio             String   @default("") @db.VarChar(280)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("profiles")
+}
+
+model Market {
+  id        String       @id @default(uuid()) @db.Uuid
+  name      String       @db.VarChar(50)
+  symbol    String       @unique @db.VarChar(10)
+  logoUrl   String?      @map("logo_url")
+  status    MarketStatus @default(active)
+  createdAt DateTime     @default(now()) @map("created_at")
+
+  listings  Listing[]
+
+  @@map("markets")
+}
+
+model Listing {
+  id          String        @id @default(uuid()) @db.Uuid
+  type        ListingType
+  coin        String        @db.VarChar(10)
+  amount      Decimal       @db.Decimal(18, 8)
+  price       Decimal       @db.Decimal(18, 2)
+  paymentCurrency String    @default("USDT") @map("payment_currency") @db.VarChar(10)
+  status      ListingStatus @default(open)
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+
+  sellerId    String        @map("seller_id") @db.Uuid
+  seller      User          @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  marketId    String        @map("market_id") @db.Uuid
+  market      Market        @relation(fields: [marketId], references: [id], onDelete: Cascade)
+
+  tradeRequests TradeRequest[]
+  trades        Trade[]
+
+  @@index([status])
+  @@index([type])
+  @@index([coin])
+  @@index([sellerId])
+  @@index([marketId])
+  @@map("listings")
+}
+
+model TradeRequest {
+  id          String              @id @default(uuid()) @db.Uuid
+  status      TradeRequestStatus  @default(pending)
+  message     String              @default("") @db.VarChar(500)
+  createdAt   DateTime            @default(now()) @map("created_at")
+  updatedAt   DateTime            @updatedAt @map("updated_at")
+
+  buyerId     String              @map("buyer_id") @db.Uuid
+  buyer       User                @relation("SentRequests", fields: [buyerId], references: [id], onDelete: Cascade)
+  sellerId    String              @map("seller_id") @db.Uuid
+  seller      User                @relation("ReceivedRequests", fields: [sellerId], references: [id], onDelete: Cascade)
+  listingId   String              @map("listing_id") @db.Uuid
+  listing     Listing             @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([buyerId])
+  @@index([sellerId])
+  @@index([listingId])
+  @@index([status])
+  @@map("trade_requests")
+}
+
+model Trade {
+  id          String       @id @default(uuid()) @db.Uuid
+  status      TradeStatus  @default(pending)
+  amount      Decimal      @db.Decimal(18, 8)
+  price       Decimal      @db.Decimal(18, 2)
+  totalUsd    Decimal      @map("total_usd") @db.Decimal(18, 2)
+  coin        String       @db.VarChar(10)
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+  completedAt DateTime?    @map("completed_at")
+
+  buyerId     String       @map("buyer_id") @db.Uuid
+  buyer       User         @relation("TradesAsBuyer", fields: [buyerId], references: [id], onDelete: Cascade)
+  sellerId    String       @map("seller_id") @db.Uuid
+  seller      User         @relation("TradesAsSeller", fields: [sellerId], references: [id], onDelete: Cascade)
+  listingId   String       @map("listing_id") @db.Uuid
+  listing     Listing      @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  messages    Message[]
+
+  @@index([buyerId])
+  @@index([sellerId])
+  @@index([listingId])
+  @@index([status])
+  @@map("trades")
+}
+
+model Message {
+  id        String   @id @default(uuid()) @db.Uuid
+  content   String   @db.VarChar(2000)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  senderId  String   @map("sender_id") @db.Uuid
+  sender    User     @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  tradeId   String   @map("trade_id") @db.Uuid
+  trade     Trade    @relation(fields: [tradeId], references: [id], onDelete: Cascade)
+
+  @@index([tradeId])
+  @@index([senderId])
+  @@map("messages")
+}
+
+model Report {
+  id             String       @id @default(uuid()) @db.Uuid
+  reason         String       @db.VarChar(500)
+  status         ReportStatus @default(open)
+  createdAt      DateTime     @default(now()) @map("created_at")
+  resolvedAt     DateTime?    @map("resolved_at")
+
+  reporterId     String       @map("reporter_id") @db.Uuid
+  reporter       User         @relation("ReportedBy", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUserId String       @map("reported_user_id") @db.Uuid
+  reportedUser   User         @relation("ReportedUser", fields: [reportedUserId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([reportedUserId])
+  @@map("reports")
+}
+
+model Session {
+  id          String   @id @default(uuid()) @db.Uuid
+  refreshToken String  @unique @map("refresh_token")
+  expiresAt   DateTime @map("expires_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  userId      String   @map("user_id") @db.Uuid
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([refreshToken])
+  @@map("sessions")
+}

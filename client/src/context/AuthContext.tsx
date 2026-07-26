@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { apiFetch, getToken, setToken, clearToken } from '../lib/api';
+import { apiFetch, getToken, setToken, clearToken, getRefreshToken, setRefreshToken, clearRefreshToken } from '../lib/api';
 import type { AuthUser } from '../lib/types';
 
 interface AuthContextValue {
@@ -17,42 +17,53 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // On first load, if a token exists, fetch the current user to restore session.
   useEffect(() => {
     const token = getToken();
     if (!token) {
       setLoading(false);
       return;
     }
-    apiFetch<{ user: AuthUser }>('/me')
+    apiFetch<{ user: AuthUser }>('/auth/me')
       .then(({ user }) => setUser(user))
-      .catch(() => clearToken())
+      .catch(() => {
+        clearToken();
+        clearRefreshToken();
+      })
       .finally(() => setLoading(false));
   }, []);
 
   async function login(identifier: string, password: string) {
-    const data = await apiFetch<{ token: string; user: AuthUser }>('/login', {
+    const data = await apiFetch<{ token: string; refreshToken: string; user: AuthUser }>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ identifier, password }),
     });
     setToken(data.token);
+    setRefreshToken(data.refreshToken);
     setUser(data.user);
   }
 
   async function register(username: string, email: string, password: string) {
-    const data = await apiFetch<{ token: string; user: AuthUser }>('/register', {
+    const data = await apiFetch<{ token: string; refreshToken: string; user: AuthUser }>('/auth/register', {
       method: 'POST',
       body: JSON.stringify({ username, email, password }),
     });
     setToken(data.token);
+    setRefreshToken(data.refreshToken);
     setUser(data.user);
   }
 
   async function logout() {
+    const refreshToken = getRefreshToken();
     try {
-      await apiFetch('/logout', { method: 'POST' });
+      await apiFetch('/auth/logout', {
+        method: 'POST',
+        body: JSON.stringify({ refreshToken }),
+      });
+    } catch {
+      // Ignore errors on logout
     } finally {
       clearToken();
+      clearRefreshToken();
       setUser(null);
     }
   }
