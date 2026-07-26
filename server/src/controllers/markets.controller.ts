@@ -1,53 +1,50 @@
 import { Request, Response, NextFunction } from 'express';
-import { prisma } from '../db/prisma';
+import { pool } from '../db/pool';
 import { sendSuccess, sendError } from '../utils/apiResponse';
+import { MarketRow, ListingRow, ProfileRow } from '../types';
 
 /** GET /api/v1/markets - list all markets with stats (public) */
 export async function listMarkets(_req: Request, res: Response, next: NextFunction) {
   try {
-    const markets = await prisma.market.findMany({
-      orderBy: { symbol: 'asc' },
-      include: {
-        _count: {
-          select: { listings: true },
-        },
-      },
-    });
+    const marketsResult = await pool.query<MarketRow & { active_listings: string }>(`
+      SELECT m.*,
+             (SELECT COUNT(*) FROM listings l WHERE l.market_id = m.id) AS active_listings
+      FROM markets m
+      ORDER BY m.symbol ASC
+    `);
 
-    // Enrich with buyer/seller counts and average rating
     const enriched = await Promise.all(
-      markets.map(async (market) => {
-        const activeListings = await prisma.listing.findMany({
-          where: { marketId: market.id, status: 'open' },
-          select: { type: true, sellerId: true },
-        });
+      marketsResult.rows.map(async (market) => {
+        const activeResult = await pool.query<ListingRow>(
+          `SELECT type, seller_id FROM listings WHERE market_id = $1 AND status = 'open'`,
+          [market.id]
+        );
 
-        const buyerCount = activeListings.filter((l) => l.type === 'buy').length;
-        const sellerCount = activeListings.filter((l) => l.type === 'sell').length;
+        const buyerCount = activeResult.rows.filter((l) => l.type === 'buy').length;
+        const sellerCount = activeResult.rows.filter((l) => l.type === 'sell').length;
 
-        // Average merchant rating (from profiles of users with listings in this market)
-        const sellerIds = [...new Set(activeListings.map((l) => l.sellerId))];
-        let avgRating = null;
+        const sellerIds = [...new Set(activeResult.rows.map((l) => l.seller_id))];
+        let avgRating: number | null = null;
         if (sellerIds.length > 0) {
-          const profiles = await prisma.profile.findMany({
-            where: { userId: { in: sellerIds } },
-            select: { trustScore: true },
-          });
-          const total = profiles.reduce((sum, p) => sum + Number(p.trustScore), 0);
-          avgRating = profiles.length > 0 ? total / profiles.length : null;
+          const profilesResult = await pool.query<ProfileRow>(
+            `SELECT trust_score FROM profiles WHERE user_id = ANY($1)`,
+            [sellerIds]
+          );
+          const total = profilesResult.rows.reduce((sum, p) => sum + Number(p.trust_score), 0);
+          avgRating = profilesResult.rows.length > 0 ? total / profilesResult.rows.length : null;
         }
 
         return {
           id: market.id,
           name: market.name,
           symbol: market.symbol,
-          logoUrl: market.logoUrl,
+          logoUrl: market.logo_url,
           status: market.status,
-          activeListings: market._count.listings,
+          activeListings: Number(market.active_listings),
           buyerCount,
           sellerCount,
           avgMerchantRating: avgRating ? Math.round(avgRating * 100) / 100 : null,
-          createdAt: market.createdAt,
+          createdAt: market.created_at,
         };
       })
     );
@@ -61,16 +58,17 @@ export async function listMarkets(_req: Request, res: Response, next: NextFuncti
 /** GET /api/v1/markets/:symbol - single market detail (public) */
 export async function getMarket(req: Request, res: Response, next: NextFunction) {
   try {
-    const market = await prisma.market.findFirst({
-      where: { symbol: { equals: req.params.symbol, mode: 'insensitive' } },
-    });
+    const result = await pool.query<MarketRow>(
+      `SELECT * FROM markets WHERE LOWER(symbol) = LOWER($1) LIMIT 1`,
+      [req.params.symbol]
+    );
 
-    if (!market) {
+    if (result.rowCount === 0) {
       sendError(res, 'Market not found', 404);
       return;
     }
 
-    sendSuccess(res, { market });
+    sendSuccess(res, { market: result.rows[0] });
   } catch (err) {
     next(err);
   }

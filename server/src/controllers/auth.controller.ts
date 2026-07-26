@@ -1,50 +1,46 @@
 import { Request, Response, NextFunction } from 'express';
-import { prisma } from '../db/prisma';
+import { pool } from '../db/pool';
 import { hashPassword, verifyPassword } from '../utils/password';
 import { signToken } from '../utils/jwt';
 import { generateRefreshToken, getRefreshTokenExpiry } from '../utils/refreshToken';
 import { sendSuccess, sendError } from '../utils/apiResponse';
+import { UserRow, SessionRow } from '../types';
 
 /** POST /api/v1/auth/register */
 export async function register(req: Request, res: Response, next: NextFunction) {
   const { username, email, password } = req.body;
 
   try {
-    const existing = await prisma.user.findFirst({
-      where: {
-        OR: [
-          { username: { equals: username, mode: 'insensitive' } },
-          { email: { equals: email, mode: 'insensitive' } },
-        ],
-      },
-    });
-    if (existing) {
+    const existing = await pool.query<UserRow>(
+      `SELECT id FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2) LIMIT 1`,
+      [username, email]
+    );
+    if (existing.rowCount && existing.rowCount > 0) {
       sendError(res, 'Username or email is already taken', 409);
       return;
     }
 
     const passwordHash = await hashPassword(password);
 
-    const user = await prisma.user.create({
-      data: {
-        username,
-        email,
-        passwordHash,
-        role: 'user',
-        profile: { create: {} },
-      },
-    });
+    const userResult = await pool.query<UserRow>(
+      `INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3) RETURNING *`,
+      [username, email, passwordHash]
+    );
+    const user = userResult.rows[0];
+
+    // Create profile
+    await pool.query(
+      `INSERT INTO profiles (user_id) VALUES ($1)`,
+      [user.id]
+    );
 
     const token = signToken({ userId: user.id, username: user.username, role: user.role });
     const refreshToken = generateRefreshToken();
 
-    await prisma.session.create({
-      data: {
-        refreshToken,
-        expiresAt: getRefreshTokenExpiry(),
-        userId: user.id,
-      },
-    });
+    await pool.query(
+      `INSERT INTO sessions (refresh_token, expires_at, user_id) VALUES ($1, $2, $3)`,
+      [refreshToken, getRefreshTokenExpiry(), user.id]
+    );
 
     sendSuccess(
       res,
@@ -70,41 +66,36 @@ export async function login(req: Request, res: Response, next: NextFunction) {
   const { identifier, password } = req.body;
 
   try {
-    const user = await prisma.user.findFirst({
-      where: {
-        OR: [
-          { username: { equals: identifier, mode: 'insensitive' } },
-          { email: { equals: identifier, mode: 'insensitive' } },
-        ],
-      },
-    });
+    const userResult = await pool.query<UserRow>(
+      `SELECT * FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($1) LIMIT 1`,
+      [identifier]
+    );
 
-    if (!user) {
+    if (userResult.rowCount === 0) {
       sendError(res, 'Invalid credentials', 401);
       return;
     }
 
-    const passwordMatches = await verifyPassword(password, user.passwordHash);
+    const user = userResult.rows[0];
+
+    const passwordMatches = await verifyPassword(password, user.password_hash);
     if (!passwordMatches) {
       sendError(res, 'Invalid credentials', 401);
       return;
     }
 
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { lastSeenAt: new Date() },
-    });
+    await pool.query(
+      `UPDATE users SET last_seen_at = now() WHERE id = $1`,
+      [user.id]
+    );
 
     const token = signToken({ userId: user.id, username: user.username, role: user.role });
     const refreshToken = generateRefreshToken();
 
-    await prisma.session.create({
-      data: {
-        refreshToken,
-        expiresAt: getRefreshTokenExpiry(),
-        userId: user.id,
-      },
-    });
+    await pool.query(
+      `INSERT INTO sessions (refresh_token, expires_at, user_id) VALUES ($1, $2, $3)`,
+      [refreshToken, getRefreshTokenExpiry(), user.id]
+    );
 
     sendSuccess(res, {
       token,
@@ -126,35 +117,41 @@ export async function refresh(req: Request, res: Response, next: NextFunction) {
   const { refreshToken } = req.body;
 
   try {
-    const session = await prisma.session.findUnique({
-      where: { refreshToken },
-      include: { user: true },
-    });
+    const sessionResult = await pool.query<SessionRow & { username: string; role: string }>(
+      `SELECT s.*, u.username, u.role
+       FROM sessions s
+       JOIN users u ON u.id = s.user_id
+       WHERE s.refresh_token = $1
+       LIMIT 1`,
+      [refreshToken]
+    );
 
-    if (!session || session.expiresAt < new Date()) {
-      if (session) {
-        await prisma.session.delete({ where: { id: session.id } });
-      }
+    if (sessionResult.rowCount === 0) {
+      sendError(res, 'Invalid or expired refresh token', 401);
+      return;
+    }
+
+    const session = sessionResult.rows[0];
+
+    if (new Date(session.expires_at) < new Date()) {
+      await pool.query(`DELETE FROM sessions WHERE id = $1`, [session.id]);
       sendError(res, 'Invalid or expired refresh token', 401);
       return;
     }
 
     // Rotate the refresh token
-    await prisma.session.delete({ where: { id: session.id } });
+    await pool.query(`DELETE FROM sessions WHERE id = $1`, [session.id]);
 
     const newRefreshToken = generateRefreshToken();
-    await prisma.session.create({
-      data: {
-        refreshToken: newRefreshToken,
-        expiresAt: getRefreshTokenExpiry(),
-        userId: session.user.id,
-      },
-    });
+    await pool.query(
+      `INSERT INTO sessions (refresh_token, expires_at, user_id) VALUES ($1, $2, $3)`,
+      [newRefreshToken, getRefreshTokenExpiry(), session.user_id]
+    );
 
     const token = signToken({
-      userId: session.user.id,
-      username: session.user.username,
-      role: session.user.role,
+      userId: session.user_id,
+      username: session.username,
+      role: session.role as any,
     });
 
     sendSuccess(res, {
@@ -171,7 +168,7 @@ export async function logout(req: Request, res: Response, next: NextFunction) {
   const { refreshToken } = req.body;
   try {
     if (refreshToken) {
-      await prisma.session.deleteMany({ where: { refreshToken } });
+      await pool.query(`DELETE FROM sessions WHERE refresh_token = $1`, [refreshToken]);
     }
     sendSuccess(res, { message: 'Logged out successfully' });
   } catch (err) {
@@ -182,7 +179,7 @@ export async function logout(req: Request, res: Response, next: NextFunction) {
 /** POST /api/v1/auth/logout-all */
 export async function logoutAll(req: Request, res: Response, next: NextFunction) {
   try {
-    await prisma.session.deleteMany({ where: { userId: req.user!.userId } });
+    await pool.query(`DELETE FROM sessions WHERE user_id = $1`, [req.user!.userId]);
     sendSuccess(res, { message: 'Logged out from all devices' });
   } catch (err) {
     next(err);
@@ -192,15 +189,25 @@ export async function logoutAll(req: Request, res: Response, next: NextFunction)
 /** GET /api/v1/auth/me */
 export async function me(req: Request, res: Response, next: NextFunction) {
   try {
-    const user = await prisma.user.findUnique({
-      where: { id: req.user!.userId },
-      select: { id: true, username: true, email: true, role: true, createdAt: true, lastSeenAt: true },
-    });
-    if (!user) {
+    const result = await pool.query<UserRow>(
+      `SELECT id, username, email, role, created_at, last_seen_at FROM users WHERE id = $1`,
+      [req.user!.userId]
+    );
+    if (result.rowCount === 0) {
       sendError(res, 'User not found', 404);
       return;
     }
-    sendSuccess(res, { user });
+    const u = result.rows[0];
+    sendSuccess(res, {
+      user: {
+        id: u.id,
+        username: u.username,
+        email: u.email,
+        role: u.role,
+        createdAt: u.created_at,
+        lastSeenAt: u.last_seen_at,
+      },
+    });
   } catch (err) {
     next(err);
   }

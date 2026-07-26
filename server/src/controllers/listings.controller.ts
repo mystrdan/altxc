@@ -1,42 +1,44 @@
 import { Request, Response, NextFunction } from 'express';
-import { prisma } from '../db/prisma';
+import { pool } from '../db/pool';
 import { sendSuccess, sendError } from '../utils/apiResponse';
+import { ListingWithRelations, MarketRow, ListingRow } from '../types';
 
 /** GET /api/v1/listings - list all open listings with filters */
 export async function listListings(req: Request, res: Response, next: NextFunction) {
   try {
     const { type, coin, marketId, status, sellerId, sort } = req.query;
 
-    const where: any = {};
-    if (type) where.type = String(type).toUpperCase();
-    if (coin) where.coin = { equals: String(coin), mode: 'insensitive' };
-    if (marketId) where.marketId = String(marketId);
-    if (status) where.status = String(status).toUpperCase();
-    if (sellerId) where.sellerId = String(sellerId);
+    const conditions: string[] = [];
+    const params: any[] = [];
+    let idx = 1;
 
-    const orderBy: any = {};
-    if (sort === 'oldest') orderBy.createdAt = 'asc';
-    else if (sort === 'price_asc') orderBy.price = 'asc';
-    else if (sort === 'price_desc') orderBy.price = 'desc';
-    else orderBy.createdAt = 'desc';
+    if (type) { conditions.push(`l.type = $${idx++}`); params.push(String(type).toUpperCase()); }
+    if (coin) { conditions.push(`LOWER(l.coin) = LOWER($${idx++})`); params.push(String(coin)); }
+    if (marketId) { conditions.push(`l.market_id = $${idx++}`); params.push(String(marketId)); }
+    if (status) { conditions.push(`l.status = $${idx++}`); params.push(String(status).toUpperCase()); }
+    if (sellerId) { conditions.push(`l.seller_id = $${idx++}`); params.push(String(sellerId)); }
 
-    const listings = await prisma.listing.findMany({
-      where,
-      orderBy,
-      include: {
-        seller: {
-          select: { id: true, username: true, role: true },
-        },
-        market: {
-          select: { id: true, name: true, symbol: true },
-        },
-        _count: {
-          select: { tradeRequests: true },
-        },
-      },
-    });
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-    sendSuccess(res, { listings });
+    let orderClause = 'ORDER BY l.created_at DESC';
+    if (sort === 'oldest') orderClause = 'ORDER BY l.created_at ASC';
+    else if (sort === 'price_asc') orderClause = 'ORDER BY l.price ASC';
+    else if (sort === 'price_desc') orderClause = 'ORDER BY l.price DESC';
+
+    const sql = `
+      SELECT l.*,
+             u.username AS seller_username, u.role AS seller_role,
+             m.name AS market_name, m.symbol AS market_symbol,
+             (SELECT COUNT(*) FROM trade_requests tr WHERE tr.listing_id = l.id) AS trade_request_count
+      FROM listings l
+      JOIN users u ON u.id = l.seller_id
+      JOIN markets m ON m.id = l.market_id
+      ${whereClause}
+      ${orderClause}
+    `;
+
+    const result = await pool.query<ListingWithRelations>(sql, params);
+    sendSuccess(res, { listings: result.rows });
   } catch (err) {
     next(err);
   }
@@ -45,24 +47,22 @@ export async function listListings(req: Request, res: Response, next: NextFuncti
 /** GET /api/v1/listings/:id - single listing detail */
 export async function getListing(req: Request, res: Response, next: NextFunction) {
   try {
-    const listing = await prisma.listing.findUnique({
-      where: { id: req.params.id },
-      include: {
-        seller: {
-          select: { id: true, username: true, role: true },
-        },
-        market: {
-          select: { id: true, name: true, symbol: true },
-        },
-      },
-    });
+    const result = await pool.query<ListingWithRelations>(`
+      SELECT l.*,
+             u.username AS seller_username, u.role AS seller_role,
+             m.name AS market_name, m.symbol AS market_symbol
+      FROM listings l
+      JOIN users u ON u.id = l.seller_id
+      JOIN markets m ON m.id = l.market_id
+      WHERE l.id = $1
+    `, [req.params.id]);
 
-    if (!listing) {
+    if (result.rowCount === 0) {
       sendError(res, 'Listing not found', 404);
       return;
     }
 
-    sendSuccess(res, { listing });
+    sendSuccess(res, { listing: result.rows[0] });
   } catch (err) {
     next(err);
   }
@@ -74,33 +74,32 @@ export async function createListing(req: Request, res: Response, next: NextFunct
 
   try {
     // Verify market exists
-    const market = await prisma.market.findUnique({ where: { id: marketId } });
-    if (!market) {
+    const marketCheck = await pool.query<MarketRow>(`SELECT id FROM markets WHERE id = $1`, [marketId]);
+    if (marketCheck.rowCount === 0) {
       sendError(res, 'Market not found', 404);
       return;
     }
 
-    const listing = await prisma.listing.create({
-      data: {
-        type: String(type).toUpperCase() as any,
-        coin: String(coin).toUpperCase(),
-        amount,
-        price,
-        paymentCurrency: 'USDT',
-        sellerId: req.user!.userId,
-        marketId,
-      },
-      include: {
-        seller: {
-          select: { id: true, username: true, role: true },
-        },
-        market: {
-          select: { id: true, name: true, symbol: true },
-        },
-      },
-    });
+    const result = await pool.query<ListingWithRelations>(`
+      INSERT INTO listings (type, coin, amount, price, payment_currency, seller_id, market_id)
+      VALUES ($1, $2, $3, $4, 'USDT', $5, $6)
+      RETURNING *
+    `, [String(type).toUpperCase(), String(coin).toUpperCase(), amount, price, req.user!.userId, marketId]);
 
-    sendSuccess(res, { listing }, 201);
+    const listing = result.rows[0];
+
+    // Fetch relations for the response
+    const fullResult = await pool.query<ListingWithRelations>(`
+      SELECT l.*,
+             u.username AS seller_username, u.role AS seller_role,
+             m.name AS market_name, m.symbol AS market_symbol
+      FROM listings l
+      JOIN users u ON u.id = l.seller_id
+      JOIN markets m ON m.id = l.market_id
+      WHERE l.id = $1
+    `, [listing.id]);
+
+    sendSuccess(res, { listing: fullResult.rows[0] }, 201);
   } catch (err) {
     next(err);
   }
@@ -112,32 +111,49 @@ export async function updateListing(req: Request, res: Response, next: NextFunct
   const { type, coin, amount, price, status } = req.body;
 
   try {
-    const existing = await prisma.listing.findUnique({ where: { id } });
-    if (!existing) {
+    const existing = await pool.query<ListingRow>(`SELECT * FROM listings WHERE id = $1`, [id]);
+    if (existing.rowCount === 0) {
       sendError(res, 'Listing not found', 404);
       return;
     }
-    if (existing.sellerId !== req.user!.userId) {
+    if (existing.rows[0].seller_id !== req.user!.userId) {
       sendError(res, 'You can only edit your own listings', 403);
       return;
     }
 
-    const listing = await prisma.listing.update({
-      where: { id },
-      data: {
-        ...(type !== undefined && { type: String(type).toUpperCase() as any }),
-        ...(coin !== undefined && { coin: String(coin).toUpperCase() }),
-        ...(amount !== undefined && { amount }),
-        ...(price !== undefined && { price }),
-        ...(status !== undefined && { status: String(status).toUpperCase() as any }),
-      },
-      include: {
-        seller: { select: { id: true, username: true, role: true } },
-        market: { select: { id: true, name: true, symbol: true } },
-      },
-    });
+    const sets: string[] = [];
+    const params: any[] = [];
+    let idx = 1;
 
-    sendSuccess(res, { listing });
+    if (type !== undefined) { sets.push(`type = $${idx++}`); params.push(String(type).toUpperCase()); }
+    if (coin !== undefined) { sets.push(`coin = $${idx++}`); params.push(String(coin).toUpperCase()); }
+    if (amount !== undefined) { sets.push(`amount = $${idx++}`); params.push(amount); }
+    if (price !== undefined) { sets.push(`price = $${idx++}`); params.push(price); }
+    if (status !== undefined) { sets.push(`status = $${idx++}`); params.push(String(status).toUpperCase()); }
+
+    if (sets.length === 0) {
+      sendError(res, 'No fields to update', 400);
+      return;
+    }
+
+    sets.push(`updated_at = now()`);
+    params.push(id);
+
+    await pool.query(
+      `UPDATE listings SET ${sets.join(', ')} WHERE id = $${idx}`, params
+    );
+
+    const fullResult = await pool.query<ListingWithRelations>(`
+      SELECT l.*,
+             u.username AS seller_username, u.role AS seller_role,
+             m.name AS market_name, m.symbol AS market_symbol
+      FROM listings l
+      JOIN users u ON u.id = l.seller_id
+      JOIN markets m ON m.id = l.market_id
+      WHERE l.id = $1
+    `, [id]);
+
+    sendSuccess(res, { listing: fullResult.rows[0] });
   } catch (err) {
     next(err);
   }
@@ -148,21 +164,17 @@ export async function deleteListing(req: Request, res: Response, next: NextFunct
   const { id } = req.params;
 
   try {
-    const existing = await prisma.listing.findUnique({ where: { id } });
-    if (!existing) {
+    const existing = await pool.query<ListingRow>(`SELECT * FROM listings WHERE id = $1`, [id]);
+    if (existing.rowCount === 0) {
       sendError(res, 'Listing not found', 404);
       return;
     }
-    if (existing.sellerId !== req.user!.userId) {
+    if (existing.rows[0].seller_id !== req.user!.userId) {
       sendError(res, 'You can only delete your own listings', 403);
       return;
     }
 
-    await prisma.listing.update({
-      where: { id },
-      data: { status: 'closed' },
-    });
-
+    await pool.query(`UPDATE listings SET status = 'closed', updated_at = now() WHERE id = $1`, [id]);
     sendSuccess(res, { message: 'Listing closed' });
   } catch (err) {
     next(err);
@@ -172,16 +184,17 @@ export async function deleteListing(req: Request, res: Response, next: NextFunct
 /** GET /api/v1/listings/my - get current user's listings */
 export async function getMyListings(req: Request, res: Response, next: NextFunction) {
   try {
-    const listings = await prisma.listing.findMany({
-      where: { sellerId: req.user!.userId },
-      orderBy: { createdAt: 'desc' },
-      include: {
-        market: { select: { id: true, name: true, symbol: true } },
-        _count: { select: { tradeRequests: true } },
-      },
-    });
+    const result = await pool.query<ListingWithRelations>(`
+      SELECT l.*,
+             m.name AS market_name, m.symbol AS market_symbol,
+             (SELECT COUNT(*) FROM trade_requests tr WHERE tr.listing_id = l.id) AS trade_request_count
+      FROM listings l
+      JOIN markets m ON m.id = l.market_id
+      WHERE l.seller_id = $1
+      ORDER BY l.created_at DESC
+    `, [req.user!.userId]);
 
-    sendSuccess(res, { listings });
+    sendSuccess(res, { listings: result.rows });
   } catch (err) {
     next(err);
   }

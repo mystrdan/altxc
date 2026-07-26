@@ -1,5 +1,8 @@
-// Re-export Prisma client for backwards compatibility with any code
-// that imported from this module.
-export { prisma } from './prisma';
-</arg_value>
-</write_to_file></tool_call>
+import { Pool } from 'pg';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+export const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
