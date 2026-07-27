@@ -25,13 +25,14 @@ export function createApp() {
   app.use(express.json());
   app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
   
-app.get('/', (_req, res) => {
+  app.get('/', (_req, res) => {
   res.status(200).json({ status: 'ok', service: 'altxc-api' });
 });
 
 app.get('/health', (_req, res) => {
   res.status(200).json({ status: 'ok' });
 });
+
   // Versioned API
   const v1 = express.Router();
   v1.use(authRoutes);
